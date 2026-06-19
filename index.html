@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>蜜蜂找狗头 - 画线游戏</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #2D1B0E;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+#game-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(4px, 1vh, 10px);
+}
+#game-container {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+}
+canvas {
+  display: block;
+  background: #87CEEB;
+}
+#ui-bar {
+  display: flex;
+  gap: clamp(6px, 1.5vw, 12px);
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+.btn {
+  padding: clamp(8px, 1.5vw, 14px) clamp(14px, 3vw, 32px);
+  border: none;
+  border-radius: 50px;
+  font-size: clamp(14px, 2vw, 18px);
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  letter-spacing: 1px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+}
+.btn:active { transform: scale(0.95); box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+.btn-draw { background: #FFE0B2; color: #5D3A1A; }
+.btn-go { background: #A5D6A7; color: #1B4F1B; }
+.btn-undo { background: #EF9A9A; color: #4E1A1A; }
+.btn-clear { background: #FFCC80; color: #5D3500; }
+.btn-next { background: #90CAF9; color: #0D3355; }
+.btn:disabled { opacity: 0.5; pointer-events: none; }
+#level-info {
+  color: #FFE0B2;
+  font-size: clamp(16px, 2.5vw, 22px);
+  font-weight: bold;
+  text-align: center;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+}
+#message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 48px;
+  font-weight: bold;
+  text-align: center;
+  pointer-events: none;
+  text-shadow: 0 4px 8px rgba(0,0,0,0.5);
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+#message.show { opacity: 1; }
+#hint-text {
+  color: #BCAAA4;
+  font-size: clamp(11px, 1.5vw, 14px);
+  text-align: center;
+  padding-bottom: 16px;
+}
+
+/* PC: wider spacing + hover effects */
+@media (min-width: 768px) {
+  #ui-bar { gap: 16px; }
+  .btn:hover { filter: brightness(1.12); }
+}
+
+/* Small mobile: tighter spacing */
+@media (max-width: 380px) {
+  #ui-bar { gap: 4px; margin-bottom: 12px; }
+  .btn { padding: 6px 12px; font-size: 13px; }
+  #level-info { font-size: 15px; }
+  #hint-text { font-size: 11px; padding-bottom: 8px; }
+}
+</style>
+</head>
+<body>
+<div id="game-wrapper">
+  <div id="level-info">🐝 第 1 关 · 画线指引小蜜蜂 🐕</div>
+  <div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="message"></div>
+  </div>
+  <div id="ui-bar">
+    <button class="btn btn-undo" id="btnUndo">↩ 撤销</button>
+    <button class="btn btn-clear" id="btnClear">🗑 清空</button>
+    <button class="btn btn-go" id="btnGo">▶ 出发！</button>
+    <button class="btn btn-undo" id="btnRetry" style="display:none;">🔄 重试</button>
+    <button class="btn btn-next" id="btnNext" style="display:none;">▶ 下一关</button>
+  </div>
+  <div id="hint-text">💡 用鼠标或手指画线，引导蜜蜂到达狗狗的嘴里</div>
+</div>
+
+<script>
+// ==================== GAME ENGINE ====================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const GAME_W = 720;
+const GAME_H = 1280;
+const BEE_RADIUS = 28;
+const DOG_WIDTH = 150;
+const DOG_HEIGHT = 158;
+const LINE_THICKNESS = 16;
+const GRAVITY = 0.5;
+const BOUNCE = 0.5;
+const FRICTION = 0.94;
+const MAX_STROKES = 8;
+
+// roundRect polyfill
+if (!ctx.roundRect) {
+  ctx.roundRect = function(x, y, w, h, r) {
+    if (typeof r === 'number') r = { tl: r, tr: r, br: r, bl: r };
+    ctx.beginPath();
+    ctx.moveTo(x + r.tl, y);
+    ctx.lineTo(x + w - r.tr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r.tr);
+    ctx.lineTo(x + w, y + h - r.br);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r.br, y + h);
+    ctx.lineTo(x + r.bl, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r.bl);
+    ctx.lineTo(x, y + r.tl);
+    ctx.quadraticCurveTo(x, y, x + r.tl, y);
+    ctx.closePath();
+  };
+}
+
+// Scale canvas to fit screen (dynamic UI measurement)
+function resizeCanvas() {
+  const levelH = document.getElementById('level-info').offsetHeight;
+  const barH = document.getElementById('ui-bar').offsetHeight;
+  const hintH = document.getElementById('hint-text').offsetHeight;
+  const wrapper = document.getElementById('game-wrapper');
+  const wrapperGap = parseInt(window.getComputedStyle(wrapper).gap) || 10;
+  const uiTotal = levelH + barH + hintH + wrapperGap * 3 + 24;
+
+  const maxH = window.innerHeight - uiTotal;
+  const maxW = window.innerWidth - 16;
+  const scale = Math.min(maxW / GAME_W, maxH / GAME_H);
+  canvas.width = GAME_W;
+  canvas.height = GAME_H;
+  canvas.style.width = (GAME_W * scale) + 'px';
+  canvas.style.height = (GAME_H * scale) + 'px';
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// ==================== ASSETS ====================
+const assets = {};
+const assetFiles = {
+  bg: 'bg.png',
+  bee: 'bee.png',
+  dog: 'dog_head.png',
+  honey: 'honey.png'
+};
+
+let assetsLoaded = 0;
+const totalAssets = Object.keys(assetFiles).length;
+
+function loadImage(key, src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { assets[key] = img; assetsLoaded++; resolve(); };
+    img.onerror = () => {
+      // Fallback: create placeholder
+      console.warn('Failed to load:', src, '- using placeholder');
+      resolve();
+    };
+    img.src = src;
+  });
+}
+
+// ==================== GAME STATE ====================
+const STATE = {
+  DRAW: 'draw',
+  PLAY: 'play',
+  WIN: 'win',
+  LOSE: 'lose'
+};
+
+let gameState = STATE.DRAW;
+let currentLevel = 1;
+let strokes = [];         // Array of strokes, each stroke = array of segments
+let currentStroke = null; // Stroke being drawn
+let bee = { x: 0, y: 0, vx: 0, vy: 0, onGround: false };
+let particles = [];
+let honeyCollected = 0;
+let honeyPositions = [];
+let shakeAmount = 0;
+let frameCount = 0;
+let trailPoints = [];     // Bee movement trail
+
+// Level definitions
+const levels = {
+  1: {
+    name: '初次见面',
+    beeStart: { x: 150, y: 200 },
+    beeVx: 2.5, beeVy: 0,
+    dogX: 560, dogY: 980,
+    honeys: [
+      { x: 350, y: 500 },
+      { x: 450, y: 650 },
+      { x: 300, y: 800 },
+    ],
+    obstacles: []
+  },
+  2: {
+    name: '曲折前进',
+    beeStart: { x: 580, y: 180 },
+    beeVx: -2, beeVy: 0,
+    dogX: 160, dogY: 1000,
+    honeys: [
+      { x: 400, y: 380 },
+      { x: 500, y: 550 },
+      { x: 300, y: 700 },
+      { x: 450, y: 850 },
+    ],
+    obstacles: [
+      { x: 360, y: 480, w: 200, h: 28 },
+      { x: 280, y: 720, w: 180, h: 28 },
+    ]
+  }
+};
+
+function loadLevel(levelNum) {
+  const lv = levels[levelNum];
+  currentLevel = levelNum;
+  bee.x = lv.beeStart.x;
+  bee.y = lv.beeStart.y;
+  bee.vx = lv.beeVx;
+  bee.vy = lv.beeVy;
+  bee.onGround = false;
+  strokes = [];
+  currentStroke = null;
+  particles = [];
+  trailPoints = [];
+  honeyCollected = 0;
+  honeyPositions = lv.honeys.map(h => ({ ...h, collected: false }));
+  shakeAmount = 0;
+  frameCount = 0;
+  gameState = STATE.DRAW;
+
+  document.getElementById('level-info').textContent =
+    `🐝 第 ${levelNum} 关 · ${lv.name} 🐕`;
+  document.getElementById('btnGo').style.display = '';
+  document.getElementById('btnGo').disabled = false;
+  document.getElementById('btnUndo').style.display = '';
+  document.getElementById('btnClear').style.display = '';
+  document.getElementById('btnRetry').style.display = 'none';
+  document.getElementById('btnNext').style.display = 'none';
+  document.getElementById('message').classList.remove('show');
+}
+
+// ==================== DRAWING ====================
+function getCanvasPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = GAME_W / rect.width;
+  const scaleY = GAME_H / rect.height;
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  return {
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY
+  };
+}
+
+function startLine(e) {
+  if (gameState !== STATE.DRAW) return;
+  if (strokes.length >= MAX_STROKES) {
+    shakeScreen(6);
+    return;
+  }
+  e.preventDefault();
+  const pos = getCanvasPos(e);
+  currentStroke = {
+    segments: [],
+    lastPoint: pos
+  };
+}
+
+function moveLine(e) {
+  if (!currentStroke) return;
+  e.preventDefault();
+  const pos = getCanvasPos(e);
+  const last = currentStroke.lastPoint;
+  const dx = pos.x - last.x;
+  const dy = pos.y - last.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > 8) {
+    currentStroke.segments.push({
+      x1: last.x, y1: last.y,
+      x2: pos.x, y2: pos.y
+    });
+    currentStroke.lastPoint = pos;
+  }
+}
+
+function endLine(e) {
+  if (!currentStroke) return;
+  e.preventDefault();
+  if (currentStroke.segments.length > 0) {
+    strokes.push(currentStroke);
+  }
+  currentStroke = null;
+}
+
+canvas.addEventListener('mousedown', startLine);
+canvas.addEventListener('mousemove', moveLine);
+canvas.addEventListener('mouseup', endLine);
+canvas.addEventListener('mouseleave', endLine);
+canvas.addEventListener('touchstart', startLine, { passive: false });
+canvas.addEventListener('touchmove', moveLine, { passive: false });
+canvas.addEventListener('touchend', endLine);
+canvas.addEventListener('touchcancel', endLine);
+
+// ==================== BUTTONS ====================
+document.getElementById('btnUndo').addEventListener('click', () => {
+  if (gameState !== STATE.DRAW) return;
+  if (strokes.length > 0) {
+    strokes.pop();
+  }
+});
+
+document.getElementById('btnClear').addEventListener('click', () => {
+  if (gameState !== STATE.DRAW) return;
+  strokes = [];
+  currentStroke = null;
+});
+
+document.getElementById('btnGo').addEventListener('click', () => {
+  if (gameState !== STATE.DRAW) return;
+  if (strokes.length === 0) {
+    shakeScreen(8);
+    return;
+  }
+  startPlay();
+});
+
+document.getElementById('btnRetry').addEventListener('click', () => {
+  loadLevel(currentLevel);
+});
+
+document.getElementById('btnNext').addEventListener('click', () => {
+  if (currentLevel === 1) {
+    loadLevel(2);
+  } else {
+    loadLevel(1);
+  }
+});
+
+function shakeScreen(amount) {
+  shakeAmount = amount;
+}
+
+function startPlay() {
+  gameState = STATE.PLAY;
+  document.getElementById('btnGo').style.display = 'none';
+  document.getElementById('btnUndo').style.display = 'none';
+  document.getElementById('btnClear').style.display = 'none';
+  document.getElementById('btnRetry').style.display = '';
+  document.getElementById('message').classList.remove('show');
+  const lv = levels[currentLevel];
+  bee.x = lv.beeStart.x;
+  bee.y = lv.beeStart.y;
+  bee.vx = lv.beeVx;
+  bee.vy = lv.beeVy;
+  bee.onGround = false;
+  honeyPositions = lv.honeys.map(h => ({ ...h, collected: false }));
+  honeyCollected = 0;
+  particles = [];
+  trailPoints = [];
+  shakeAmount = 0;
+}
+
+function winLevel() {
+  gameState = STATE.WIN;
+  document.getElementById('btnRetry').style.display = 'none';
+  document.getElementById('btnNext').style.display = '';
+  spawnParticles(bee.x, bee.y, '#FFD700', 40);
+  if (currentLevel === 1) {
+    document.getElementById('btnNext').textContent = '▶ 下一关';
+  } else {
+    document.getElementById('btnNext').textContent = '🔄 再来一次';
+  }
+}
+
+function loseLevel() {
+  gameState = STATE.LOSE;
+  document.getElementById('btnGo').style.display = 'none';
+  document.getElementById('btnUndo').style.display = 'none';
+  document.getElementById('btnClear').style.display = 'none';
+  document.getElementById('btnRetry').style.display = '';
+  spawnParticles(bee.x, bee.y, '#FF6B6B', 25);
+  setTimeout(() => {
+    if (gameState === STATE.LOSE) {
+      loadLevel(currentLevel);
+    }
+  }, 2500);
+}
+
+// ==================== PHYSICS ====================
+function closestPointOnSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return { x: x1, y: y1, t: 0, nx: 0, ny: -1 };
+  let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  // Normal perpendicular to segment (pointing "up" relative to segment)
+  const segLen = Math.sqrt(lenSq);
+  const nx = -dy / segLen;
+  const ny = dx / segLen;
+  return { x: x1 + t * dx, y: y1 + t * dy, t, nx, ny };
+}
+
+function getAllSegments() {
+  const segs = [];
+  for (const stroke of strokes) {
+    for (const seg of stroke.segments) {
+      segs.push(seg);
+    }
+  }
+  return segs;
+}
+
+function checkLineCollisions() {
+  const allSegs = getAllSegments();
+  let collided = false;
+
+  for (const seg of allSegs) {
+    const cp = closestPointOnSegment(bee.x, bee.y, seg.x1, seg.y1, seg.x2, seg.y2);
+    const dx = bee.x - cp.x;
+    const dy = bee.y - cp.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const minDist = BEE_RADIUS + LINE_THICKNESS / 2;
+
+    if (dist < minDist && dist > 0.0001) {
+      // Normal from collision point to bee
+      const cnx = dx / dist;
+      const cny = dy / dist;
+
+      // Push bee out of the line
+      bee.x = cp.x + cnx * minDist;
+      bee.y = cp.y + cny * minDist;
+
+      // Reflect velocity if moving into the line
+      const dot = bee.vx * cnx + bee.vy * cny;
+      if (dot < 0) {
+        bee.vx -= (1 + BOUNCE) * dot * cnx;
+        bee.vy -= (1 + BOUNCE) * dot * cny;
+        // Apply friction along surface
+        bee.vx *= FRICTION;
+        bee.vy *= FRICTION;
+        collided = true;
+
+        // Spawn small particles on collision
+        if (Math.abs(dot) > 2) {
+          spawnParticles(cp.x, cp.y, '#D2B48C', 3);
+        }
+      }
+
+      // If bee is resting on the line (low velocity, pushing down)
+      if (Math.abs(bee.vx) < 0.5 && Math.abs(bee.vy) < 0.5 && dot < 0.3 && dot > -0.3) {
+        bee.onGround = true;
+        // Counteract gravity while on surface
+        bee.vy = Math.min(bee.vy, 0);
+      }
+    }
+  }
+
+  return collided;
+}
+
+function checkObstacleCollisions() {
+  const lv = levels[currentLevel];
+  if (!lv.obstacles) return;
+  for (const obs of lv.obstacles) {
+    const cx = Math.max(obs.x, Math.min(bee.x, obs.x + obs.w));
+    const cy = Math.max(obs.y, Math.min(bee.y, obs.y + obs.h));
+    const dx = bee.x - cx;
+    const dy = bee.y - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < BEE_RADIUS) {
+      if (dist > 0.001) {
+        bee.x = cx + (dx / dist) * BEE_RADIUS;
+        bee.y = cy + (dy / dist) * BEE_RADIUS;
+      }
+      const nx = dx / (dist || 1);
+      const ny = dy / (dist || 1);
+      const dot = bee.vx * nx + bee.vy * ny;
+      if (dot < 0) {
+        bee.vx -= 2 * dot * nx;
+        bee.vy -= 2 * dot * ny;
+      }
+    }
+  }
+}
+
+function checkHoneyCollection() {
+  for (const h of honeyPositions) {
+    if (h.collected) continue;
+    const dx = bee.x - h.x;
+    const dy = bee.y - h.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < BEE_RADIUS + 25) {
+      h.collected = true;
+      honeyCollected++;
+      spawnParticles(h.x, h.y, '#FFD700', 15);
+      // Small score pop
+      spawnParticles(h.x, h.y - 10, '#FFF176', 8);
+    }
+  }
+}
+
+function checkWinCondition() {
+  const lv = levels[currentLevel];
+  const dx = Math.abs(bee.x - lv.dogX);
+  const dy = Math.abs(bee.y - lv.dogY);
+  // Check if bee is within the dog head bounding box
+  if (dx < DOG_WIDTH/2 + 10 && dy < DOG_HEIGHT/2 + 10) {
+    winLevel();
+  }
+}
+
+function checkLoseCondition() {
+  if (bee.y > GAME_H + 100 || bee.y < -200 || bee.x < -150 || bee.x > GAME_W + 150) {
+    loseLevel();
+  }
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 7,
+      vy: (Math.random() - 0.5) * 7 - 3,
+      life: 1,
+      decay: 0.012 + Math.random() * 0.03,
+      size: 2 + Math.random() * 5,
+      color
+    });
+  }
+}
+
+function updatePhysics() {
+  if (gameState !== STATE.PLAY) return;
+
+  // Apply gravity
+  bee.vy += GRAVITY;
+  bee.vx *= 0.998; // Air resistance
+  bee.onGround = false;
+
+  // Update position
+  bee.x += bee.vx;
+  bee.y += bee.vy;
+
+  // Check collisions
+  checkLineCollisions();
+  checkObstacleCollisions();
+  checkHoneyCollection();
+  checkWinCondition();
+  checkLoseCondition();
+
+  // Update trail
+  if (bee.vx * bee.vx + bee.vy * bee.vy > 1) {
+    trailPoints.push({ x: bee.x, y: bee.y, life: 1 });
+  }
+  for (const tp of trailPoints) tp.life -= 0.04;
+  trailPoints = trailPoints.filter(tp => tp.life > 0);
+  if (trailPoints.length > 60) trailPoints.splice(0, trailPoints.length - 60);
+
+  // Update particles
+  for (const p of particles) {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.12;
+    p.life -= p.decay;
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  // Shake decay
+  if (shakeAmount > 0) shakeAmount *= 0.85;
+  if (shakeAmount < 0.1) shakeAmount = 0;
+
+  frameCount++;
+}
+
+// ==================== RENDER ====================
+function drawBackground() {
+  if (assets.bg) {
+    ctx.drawImage(assets.bg, 0, 0, GAME_W, GAME_H);
+  } else {
+    // Gradient fallback
+    const grad = ctx.createLinearGradient(0, 0, 0, GAME_H);
+    grad.addColorStop(0, '#87CEEB');
+    grad.addColorStop(0.4, '#B0E0E6');
+    grad.addColorStop(0.6, '#98FB98');
+    grad.addColorStop(0.8, '#F5DEB3');
+    grad.addColorStop(1, '#8B7355');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, GAME_W, GAME_H);
+  }
+}
+
+function drawStrokes() {
+  // Draw all completed strokes
+  for (const stroke of strokes) {
+    if (stroke.segments.length === 0) continue;
+
+    // Shadow/outline
+    ctx.strokeStyle = '#5D3A1A';
+    ctx.lineWidth = LINE_THICKNESS + 4;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(stroke.segments[0].x1, stroke.segments[0].y1);
+    for (const seg of stroke.segments) {
+      ctx.lineTo(seg.x2, seg.y2);
+    }
+    ctx.stroke();
+
+    // Main line color
+    ctx.strokeStyle = '#8B5E3C';
+    ctx.lineWidth = LINE_THICKNESS;
+    ctx.beginPath();
+    ctx.moveTo(stroke.segments[0].x1, stroke.segments[0].y1);
+    for (const seg of stroke.segments) {
+      ctx.lineTo(seg.x2, seg.y2);
+    }
+    ctx.stroke();
+
+    // Highlight
+    ctx.strokeStyle = '#C4945E';
+    ctx.lineWidth = LINE_THICKNESS - 6;
+    ctx.beginPath();
+    ctx.moveTo(stroke.segments[0].x1, stroke.segments[0].y1);
+    for (const seg of stroke.segments) {
+      ctx.lineTo(seg.x2, seg.y2);
+    }
+    ctx.stroke();
+  }
+
+  // Draw current stroke being drawn
+  if (currentStroke && currentStroke.segments.length > 0) {
+    ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = '#5D3A1A';
+    ctx.lineWidth = LINE_THICKNESS + 4;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(currentStroke.segments[0].x1, currentStroke.segments[0].y1);
+    for (const seg of currentStroke.segments) {
+      ctx.lineTo(seg.x2, seg.y2);
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = '#8B5E3C';
+    ctx.lineWidth = LINE_THICKNESS;
+    ctx.beginPath();
+    ctx.moveTo(currentStroke.segments[0].x1, currentStroke.segments[0].y1);
+    for (const seg of currentStroke.segments) {
+      ctx.lineTo(seg.x2, seg.y2);
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = '#C4945E';
+    ctx.lineWidth = LINE_THICKNESS - 6;
+    ctx.beginPath();
+    ctx.moveTo(currentStroke.segments[0].x1, currentStroke.segments[0].y1);
+    for (const seg of currentStroke.segments) {
+      ctx.lineTo(seg.x2, seg.y2);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawDogHead() {
+  const lv = levels[currentLevel];
+  const x = lv.dogX;
+  const y = lv.dogY;
+
+  // Glow pulse
+  const pulse = Math.sin(frameCount * 0.06) * 0.2 + 0.8;
+  ctx.save();
+  ctx.shadowColor = 'rgba(255, 200, 50, 0.6)';
+  ctx.shadowBlur = 25 + pulse * 15;
+
+  if (assets.dog) {
+    ctx.drawImage(assets.dog, x - DOG_WIDTH/2, y - DOG_HEIGHT/2, DOG_WIDTH, DOG_HEIGHT);
+  } else {
+    // Placeholder dog head
+    const r = 60;
+    ctx.fillStyle = '#F4A460';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    // Ears
+    ctx.fillStyle = '#D2691E';
+    ctx.beginPath();
+    ctx.arc(x - 35, y - 35, 22, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + 35, y - 35, 22, 0, Math.PI * 2);
+    ctx.fill();
+    // Eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(x - 18, y - 8, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + 18, y - 8, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(x - 16, y - 6, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + 16, y - 6, 7, 0, Math.PI * 2);
+    ctx.fill();
+    // Mouth (open)
+    ctx.fillStyle = '#8B0000';
+    ctx.beginPath();
+    ctx.ellipse(x, y + 20, 28, 18, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Arrow indicator during draw mode
+  if (gameState === STATE.DRAW) {
+    const bounce = Math.sin(frameCount * 0.08) * 8;
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('👆', x, y - DOG_HEIGHT/2 - 35 + bounce);
+  }
+}
+
+function drawBeeStartIndicator() {
+  // Show initial direction arrow during draw mode
+  if (gameState !== STATE.DRAW) return;
+  const lv = levels[currentLevel];
+  const sx = lv.beeStart.x;
+  const sy = lv.beeStart.y;
+  const vx = lv.beeVx;
+  const vy = lv.beeVy;
+
+  // Dashed prediction line
+  const steps = 15;
+  ctx.setLineDash([8, 6]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(sx, sy);
+  let px = sx, py = sy;
+  let pvx = vx, pvy = vy;
+  for (let i = 0; i < steps; i++) {
+    pvy += GRAVITY;
+    px += pvx;
+    py += pvy;
+    ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Arrow at start
+  const arrowAlpha = 0.5 + Math.sin(frameCount * 0.06) * 0.3;
+  ctx.fillStyle = `rgba(255,255,255,${arrowAlpha})`;
+  ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('起点', sx, sy - BEE_RADIUS - 20);
+}
+
+function drawBee() {
+  // Draw start indicator
+  drawBeeStartIndicator();
+
+  // Draw trail
+  if (gameState === STATE.PLAY) {
+    for (let i = 0; i < trailPoints.length; i++) {
+      const tp = trailPoints[i];
+      const alpha = tp.life * 0.4;
+      const size = BEE_RADIUS * tp.life * 0.6;
+      ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(tp.x, tp.y, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.save();
+
+  // Rotation based on velocity
+  const speed = Math.sqrt(bee.vx * bee.vx + bee.vy * bee.vy);
+  let angle = Math.atan2(bee.vy, bee.vx) + Math.PI / 2;
+  if (speed < 0.5) angle = Math.sin(frameCount * 0.05) * 0.1;
+
+  ctx.translate(bee.x, bee.y);
+  ctx.rotate(angle);
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath();
+  ctx.ellipse(3, 3, BEE_RADIUS, BEE_RADIUS * 0.85, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (assets.bee) {
+    const size = BEE_RADIUS * 2 + 12;
+    ctx.drawImage(assets.bee, -size/2, -size/2, size, size);
+  } else {
+    // Placeholder bee
+    // Body
+    const bodyGrad = ctx.createRadialGradient(0, -3, BEE_RADIUS*0.1, 0, 0, BEE_RADIUS);
+    bodyGrad.addColorStop(0, '#FFE44D');
+    bodyGrad.addColorStop(1, '#F0A000');
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, BEE_RADIUS, BEE_RADIUS * 0.85, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Stripes
+    ctx.fillStyle = '#3D2200';
+    ctx.fillRect(-18, -6, 36, 6);
+    ctx.fillRect(-18, 6, 36, 5);
+    // Wings
+    const wingFlap = Math.sin(frameCount * 0.4) * 0.3;
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath();
+    ctx.ellipse(-14, -18 + wingFlap * 10, 16, 10, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(14, -18 - wingFlap * 10, 16, 10, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    // Eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(-7, -2, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(7, -2, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(-6, -2, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(6, -2, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Glow when moving fast
+  if (speed > 4 && gameState === STATE.PLAY) {
+    ctx.fillStyle = 'rgba(255, 240, 100, 0.3)';
+    ctx.beginPath();
+    ctx.arc(bee.x, bee.y, BEE_RADIUS + 8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawHoneys() {
+  for (const h of honeyPositions) {
+    if (h.collected) continue;
+    const bounce = Math.sin(frameCount * 0.08 + h.x) * 5;
+
+    ctx.save();
+    ctx.translate(h.x, h.y + bounce);
+
+    // Glow
+    ctx.shadowColor = 'rgba(255, 200, 0, 0.7)';
+    ctx.shadowBlur = 15;
+
+    if (assets.honey) {
+      ctx.drawImage(assets.honey, -22, -22, 44, 44);
+    } else {
+      const grad = ctx.createRadialGradient(0, -3, 3, 0, 0, 14);
+      grad.addColorStop(0, '#FFE44D');
+      grad.addColorStop(1, '#F0A000');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, 14, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.shadowBlur = 0;
+
+    // Sparkle
+    const sparkle = Math.sin(frameCount * 0.15 + h.x * 2) * 0.4 + 0.6;
+    ctx.fillStyle = `rgba(255,255,255,${sparkle})`;
+    ctx.beginPath();
+    ctx.arc(-6, -8, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawObstacles() {
+  const lv = levels[currentLevel];
+  if (!lv.obstacles) return;
+  for (const obs of lv.obstacles) {
+    // Spiky obstacle
+    ctx.fillStyle = '#EF5350';
+    ctx.strokeStyle = '#D32F2F';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    const spikeCount = Math.floor(obs.w / 20);
+    const spikeH = 12;
+    ctx.moveTo(obs.x, obs.y + obs.h);
+    for (let i = 0; i <= spikeCount; i++) {
+      const sx = obs.x + (i / spikeCount) * obs.w;
+      ctx.lineTo(sx, obs.y + (i % 2 === 0 ? -spikeH : spikeH));
+    }
+    ctx.lineTo(obs.x + obs.w, obs.y + obs.h);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Body
+    ctx.fillStyle = '#EF5350';
+    ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
+    ctx.strokeStyle = '#D32F2F';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(obs.x, obs.y, obs.w, obs.h);
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.fillStyle = p.color.replace(')', `,${p.life})`).replace('rgb', 'rgba');
+    if (p.color.startsWith('#')) {
+      const alpha = Math.floor(p.life * 255).toString(16).padStart(2, '0');
+      ctx.fillStyle = p.color + alpha;
+    }
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawUI() {
+  const totalHoney = levels[currentLevel].honeys.length;
+
+  // ==================== LAYER 1: Semi-transparent mask ====================
+  if (gameState === STATE.WIN || gameState === STATE.LOSE) {
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, 0, GAME_W, GAME_H);
+  }
+
+  // ==================== LAYER 2: White rounded win dialog (WIN only) ====================
+  if (gameState === STATE.WIN) {
+    const dialogW = 450;
+    const dialogH = 260;
+    const dialogX = (GAME_W - dialogW) / 2;
+    const dialogY = (GAME_H - dialogH) / 2;
+    const cx = GAME_W / 2;
+
+    // Warm cream rounded container with shadow
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.35)';
+    ctx.shadowBlur = 25;
+    ctx.shadowOffsetY = 4;
+    ctx.fillStyle = 'rgba(255,248,225,0.96)';
+    ctx.beginPath();
+    ctx.roundRect(dialogX, dialogY, dialogW, dialogH, 20);
+    ctx.fill();
+    ctx.restore();
+
+    // Golden border
+    ctx.strokeStyle = 'rgba(255,179,0,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(dialogX, dialogY, dialogW, dialogH, 20);
+    ctx.stroke();
+
+    // Main title
+    ctx.fillStyle = '#F57F17';
+    ctx.font = 'bold 56px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🎉 通关成功！', cx, dialogY + 85);
+
+    // Subtitle
+    ctx.fillStyle = '#A1887F';
+    ctx.font = 'bold 30px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText('太棒啦！', cx, dialogY + 140);
+
+    // Honey collection stats
+    ctx.fillStyle = '#795548';
+    ctx.font = '22px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText(`🍯 本局收集：${honeyCollected} / 共${totalHoney}个`, cx, dialogY + 190);
+  }
+
+  // LOSE dialog
+  if (gameState === STATE.LOSE) {
+    const dialogW = 400;
+    const dialogH = 240;
+    const dialogX = (GAME_W - dialogW) / 2;
+    const dialogY = (GAME_H - dialogH) / 2;
+    const cx = GAME_W / 2;
+
+    // Warm off-white rounded container with shadow
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.35)';
+    ctx.shadowBlur = 25;
+    ctx.shadowOffsetY = 4;
+    ctx.fillStyle = 'rgba(255,245,238,0.96)';
+    ctx.beginPath();
+    ctx.roundRect(dialogX, dialogY, dialogW, dialogH, 20);
+    ctx.fill();
+    ctx.restore();
+
+    // Subtle border
+    ctx.strokeStyle = 'rgba(180,160,150,0.4)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(dialogX, dialogY, dialogW, dialogH, 20);
+    ctx.stroke();
+
+    // Crying emoji
+    ctx.font = '68px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('😢', cx, dialogY + 95);
+
+    // Main text — single line, bold
+    ctx.fillStyle = '#6D4C41';
+    ctx.font = 'bold 46px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText('掉下去了！', cx, dialogY + 170);
+  }
+
+  // ==================== LAYER 3: Top-left honey progress (ALWAYS visible) ====================
+  const labelX = 8;
+  const labelY = 8;
+  const labelW = 110;
+  const labelH = 46;
+
+  ctx.fillStyle = 'rgba(62,39,35,0.88)';
+  ctx.beginPath();
+  ctx.roundRect(labelX, labelY, labelW, labelH, 23);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,179,0,0.45)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.fillStyle = '#FFE0B2';
+  ctx.font = 'bold 22px "PingFang SC", "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('🐝', labelX + 10, labelY + 33);
+  ctx.fillText(`${honeyCollected}/${totalHoney}`, labelX + 40, labelY + 33);
+
+  // ==================== LAYER 4: Stroke counter (DRAW only) ====================
+  if (gameState === STATE.DRAW) {
+    const remaining = MAX_STROKES - strokes.length;
+    ctx.fillStyle = 'rgba(62,39,35,0.88)';
+    ctx.beginPath();
+    ctx.roundRect(GAME_W - 170, 20, 150, 50, 25);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,179,0,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = remaining <= 1 ? '#EF9A9A' : '#FFE0B2';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`✏️ ${remaining}/${MAX_STROKES}`, GAME_W - 40, 55);
+  }
+
+  // ==================== LAYER 5: Draw hint (DRAW only) ====================
+  if (gameState === STATE.DRAW) {
+    const alpha = 0.5 + Math.sin(frameCount * 0.06) * 0.3;
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('👇 在屏幕上画线吧！', GAME_W / 2, GAME_H - 60);
+  }
+}
+
+function render() {
+  ctx.clearRect(0, 0, GAME_W, GAME_H);
+
+  // Apply shake
+  let sx = 0, sy = 0;
+  if (shakeAmount > 0.1) {
+    sx = (Math.random() - 0.5) * shakeAmount * 2;
+    sy = (Math.random() - 0.5) * shakeAmount * 2;
+  }
+
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  drawBackground();
+  drawObstacles();
+  drawStrokes();
+  drawHoneys();
+  drawDogHead();
+  drawBee();
+  drawParticles();
+  drawUI();
+
+  ctx.restore();
+}
+
+// ==================== GAME LOOP ====================
+function gameLoop() {
+  updatePhysics();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+// ==================== INIT ====================
+async function init() {
+  // Load all assets
+  const loadPromises = Object.entries(assetFiles).map(([key, src]) =>
+    loadImage(key, src)
+  );
+  await Promise.all(loadPromises);
+
+  loadLevel(1);
+  gameLoop();
+}
+
+init().catch(err => {
+  console.error('Init error:', err);
+  // Start anyway with placeholders
+  loadLevel(1);
+  gameLoop();
+});
+</script>
+</body>
+</html>
