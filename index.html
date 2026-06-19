@@ -1103,6 +1103,19 @@ function drawUI() {
     ctx.textAlign = 'center';
     ctx.fillText('👇 在屏幕上画线吧！', GAME_W / 2, GAME_H - 60);
   }
+
+  // Loading indicator (shown while assets load in background)
+  if (assetsLoaded < totalAssets) {
+    const pct = Math.round((assetsLoaded / totalAssets) * 100);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.roundRect(GAME_W / 2 - 60, GAME_H - 90, 120, 32, 16);
+    ctx.fill();
+    ctx.fillStyle = '#FFE0B2';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('⏳ ' + pct + '%', GAME_W / 2, GAME_H - 68);
+  }
 }
 
 function render() {
@@ -1139,14 +1152,15 @@ function gameLoop() {
 
 // ==================== INIT ====================
 async function init() {
-  // Load all assets
+  // Start game immediately with placeholders
+  loadLevel(1);
+  gameLoop();
+
+  // Load images in background (non-blocking)
   const loadPromises = Object.entries(assetFiles).map(([key, src]) =>
     loadImage(key, src)
   );
   await Promise.all(loadPromises);
-
-  loadLevel(1);
-  gameLoop();
 }
 
 init().catch(err => {
